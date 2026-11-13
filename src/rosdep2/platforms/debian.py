@@ -363,6 +363,31 @@ class AptInstaller(PackageManagerInstaller):
     def __init__(self):
         super(AptInstaller, self).__init__(dpkg_detect)
 
+    def apply_version_constraints(self, resolved, constraints, rosdep_key):
+        """
+        Append package.xml version constraints to the resolved entry, as bloom
+        does for debian/control: ``name (>= 1.2), name (<< 2)``. For an OR-group
+        the constraint binds to its last alternative, typically a versioned virtual
+        package after the default real package (Debian Policy 7.5):
+        ``libcublas-13-5 | libcublas.so.13 (>= 13.6)``. Only for a key resolving to
+        one entry whose last alternative has no version, and only with apt-get
+        satisfy (apt >= 2.1); otherwise the constraints are ignored, as before.
+        """
+        if not constraints or not apt_satisfy_available():
+            return resolved
+        entry = resolved[0].strip() if len(resolved) == 1 else ''
+        last = entry.split('|')[-1]
+        if not entry or ',' in entry or '(' in last or '=' in entry:
+            print('WARNING: version constraints %s of rosdep key [%s] ignored: it resolves to %s, '
+                  'not to one entry whose last alternative has no version'
+                  % (constraints, rosdep_key, list(resolved)),
+                  file=sys.stderr)
+            return resolved
+        ops = {'version_lt': '<<', 'version_lte': '<=', 'version_eq': '=',
+               'version_gte': '>=', 'version_gt': '>>'}
+        # one entry: the bounds are checked and installed together (a range stays a range)
+        return [', '.join('%s (%s %s)' % (entry, ops[attr], version) for attr, version in constraints)]
+
     def get_version_strings(self):
         output = subprocess.check_output(['apt-get', '--version'])
         version = output.splitlines()[0].split(b' ')[1].decode()

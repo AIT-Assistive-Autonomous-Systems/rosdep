@@ -56,6 +56,10 @@ DEFAULT_VIEW_KEY = '*default*'
 # no longer resource-dependent.
 
 
+#: package.xml dependency attributes constraining the version (REP 140)
+VERSION_ATTRIBUTES = ('version_lt', 'version_lte', 'version_eq', 'version_gte', 'version_gt')
+
+
 class RosPkgLoader(RosdepLoader):
 
     def __init__(self, rospack=None, rosstack=None, underlay_key=None, dependency_types=[]):
@@ -131,6 +135,22 @@ class RosPkgLoader(RosdepLoader):
             self._catkin_packages_cache = dict(find_catkin_paths(self._rospack))
             self._catkin_packages_cache.update(find_catkin_paths(self._rosstack))
         return self._catkin_packages_cache
+
+    def get_rosdep_version_constraints(self, resource_name):
+        """
+        See :meth:`RosdepLoader.get_rosdep_version_constraints`; package.xml only.
+        """
+        if resource_name not in self.get_catkin_paths():
+            return {}
+        pkg = catkin_pkg.package.parse_package(self.get_catkin_paths()[resource_name])
+        pkg.evaluate_conditions(os.environ)
+        constraints = {}
+        for d in sum((getattr(pkg, '{}_depends'.format(t)) for t in self.include_dep_types), []):
+            if d.evaluated_condition:
+                for attr in VERSION_ATTRIBUTES:
+                    if getattr(d, attr, None) is not None:
+                        constraints.setdefault(d.name, []).append((attr, getattr(d, attr)))
+        return constraints
 
     def get_rosdeps(self, resource_name, implicit=True):
         """

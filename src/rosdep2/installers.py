@@ -269,6 +269,17 @@ class Installer(object):
         """
         raise NotImplementedError('get_package_install_command', resolved, interactive, reinstall, quiet)
 
+    def apply_version_constraints(self, resolved, constraints, rosdep_key):
+        """
+        Apply version constraints from package.xml (``version_gte`` etc.) to the
+        resolution of *rosdep_key*. Installers that cannot express versions
+        ignore them (default).
+
+        :param constraints: ``[(attribute, version)]``
+        :returns: resolved installation items, ``[opaque]``
+        """
+        return resolved
+
     def get_depends(self, rosdep_args):
         """
         :returns: list of dependencies on other rosdep keys.  Only

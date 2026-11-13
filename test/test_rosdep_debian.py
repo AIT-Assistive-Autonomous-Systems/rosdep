@@ -236,3 +236,24 @@ def test_AptInstaller_relations_without_satisfy():
             assert False, 'expected InstallFailed'
         except InstallFailed as e:
             assert 'apt-get satisfy' in str(e) and 'b | c' in str(e)
+
+
+def test_AptInstaller_version_constraints():
+    # package.xml version_* attributes become relations, as bloom writes them to debian/control
+    from rosdep2.platforms.debian import AptInstaller
+
+    installer = AptInstaller()
+    constraints = [('version_gte', '12.1'), ('version_lt', '13')]
+    with patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=True):
+        assert installer.apply_version_constraints(['libcufft.so.12'], constraints, 'k') == [
+            'libcufft.so.12 (>= 12.1), libcufft.so.12 (<< 13)']
+        # OR-group: bound to the last alternative (default package first, virtual last)
+        assert installer.apply_version_constraints(
+            ['libcufft-13-5 | libcufft.so.12'], constraints[:1], 'k') == [
+            'libcufft-13-5 | libcufft.so.12 (>= 12.1)']
+        # no single place for the version: unchanged
+        for resolved in (['a | b (>= 1)'], ['a (>= 1)'], ['a', 'b'], ['a, b'], ['a=1.0']):
+            assert installer.apply_version_constraints(resolved, constraints, 'k') == resolved
+    with patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=False):
+        # apt < 2.1 cannot install relations: ignored, as before
+        assert installer.apply_version_constraints(['libcufft.so.12'], constraints, 'k') == ['libcufft.so.12']
