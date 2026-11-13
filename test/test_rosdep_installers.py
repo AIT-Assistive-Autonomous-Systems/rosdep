@@ -586,7 +586,7 @@ def test_RosdepInstaller_install_resolved(mock_geteuid):
     from rosdep2 import create_default_installer_context
     from rosdep2.lookup import RosdepLookup
     from rosdep2.installers import RosdepInstaller
-    from rosdep2.platforms.debian import APT_INSTALLER
+    from rosdep2.platforms.debian import APT_INSTALLER, apt_satisfy_available
 
     rospack, rosstack = get_test_rospkgs()
 
@@ -616,7 +616,10 @@ def test_RosdepInstaller_install_resolved(mock_geteuid):
                 raise
             raise SkipTest('targets ubuntu systems only')
     stdout_lines = [x.strip() for x in stdout.getvalue().split('\n') if x.strip()]
-    assert len(stdout_lines) == 3
     assert stdout_lines[0] == '#[apt] Installation commands:'
-    assert 'sudo -H apt-get install rosdep-fake1' in stdout_lines, 'stdout_lines: %s' % stdout_lines
-    assert 'sudo -H apt-get install rosdep-fake2' in stdout_lines, 'stdout_lines: %s' % stdout_lines
+    if apt_satisfy_available():
+        assert stdout_lines[1:] == ['sudo -H apt-get satisfy rosdep-fake1 rosdep-fake2'], stdout_lines
+    else:
+        assert len(stdout_lines) == 3
+        assert 'sudo -H apt-get install rosdep-fake1' in stdout_lines, 'stdout_lines: %s' % stdout_lines
+        assert 'sudo -H apt-get install rosdep-fake2' in stdout_lines, 'stdout_lines: %s' % stdout_lines
