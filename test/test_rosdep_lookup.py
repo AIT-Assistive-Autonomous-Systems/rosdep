@@ -633,3 +633,26 @@ def test_RosdepLookup_resolve_all():
             if k == 'apt':
                 apt_resolutions.extend(v)
         assert set(apt_resolutions) == set(['libtinyxml-dev', 'libboost1.40-all-dev', 'libtool', 'libltdl-dev']), set(apt_resolutions)
+
+
+def test_RosdepLookup_resolve_all_version_constraints():
+    # package.xml version_* attributes reach the installer, merged over all resources
+    from unittest.mock import Mock, patch
+    from rosdep2 import create_default_installer_context
+    from rosdep2.lookup import RosdepLookup
+
+    loader = Mock()
+    loader.get_rosdeps.side_effect = lambda name, implicit=True: {'pkg_a': ['libfoo', 'bar'], 'pkg_b': ['libfoo']}[name]
+    loader.get_rosdep_version_constraints.side_effect = lambda name: {
+        'pkg_a': {'libfoo': [('version_gte', '1.2')]},
+        'pkg_b': {'libfoo': [('version_gte', '1.2'), ('version_lt', '2')]},
+    }[name]
+    lookup = RosdepLookup({}, loader)
+    context = create_default_installer_context()
+    context.set_os_override('ubuntu', 'noble')
+    resolved = {'libfoo': ['libfoo1'], 'bar': ['bar']}
+    with patch.object(lookup, 'resolve', side_effect=lambda key, res, ctx: ('apt', resolved[key], [])), \
+            patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=True):
+        resolutions, errors = lookup.resolve_all(['pkg_a', 'pkg_b'], context)
+    assert not errors
+    assert resolutions == [('apt', ['libfoo1 (>= 1.2), libfoo1 (<< 2)', 'bar'])], resolutions

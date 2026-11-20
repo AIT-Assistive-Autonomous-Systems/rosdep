@@ -84,6 +84,13 @@ class RosdepLoader:
         """
         raise NotImplementedError(resource_name, implicit)  # pychecker
 
+    def get_rosdep_version_constraints(self, resource_name):
+        """
+        :returns: version constraints *resource_name* puts on its rosdep keys
+          (``version_gte`` etc. in package.xml), ``{rosdep_key: [(attribute, version)]}``
+        """
+        return {}
+
     def get_view_key(self, resource_name):
         """
         Map *resource_name* to a view key.  In rospkg, this maps a ROS

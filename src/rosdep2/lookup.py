@@ -321,6 +321,14 @@ class RosdepLookup(object):
         """
         return self.loader.get_rosdeps(resource_name, implicit=implicit)
 
+    def get_rosdep_version_constraints(self, resource_name):
+        """
+        :returns: version constraints *resource_name* puts on its rosdep keys,
+          ``{rosdep_key: [(attribute, version)]}``
+        """
+        get = getattr(self.loader, 'get_rosdep_version_constraints', None)
+        return get(resource_name) if get else {}
+
     def get_resources_that_need(self, rosdep_name):
         """
         :param rosdep_name: name of rosdep dependency
@@ -398,6 +406,7 @@ class RosdepLookup(object):
         """
         depend_graph = DependencyGraph()
         errors = {}
+        version_constraints = {}  # rosdep key -> [(attribute, version)] from all resources
         # TODO: resolutions dictionary should be replaced with resolution model instead of mapping (undefined) keys.
         for resource_name in resources:
             try:
@@ -406,6 +415,10 @@ class RosdepLookup(object):
                     print('resolve_all: resource [%s] requires rosdep keys [%s]' % (resource_name, ', '.join(rosdep_keys)), file=sys.stderr)
                 rosdep_keys = prune_catkin_packages(rosdep_keys, self.verbose)
                 rosdep_keys = prune_skipped_packages(rosdep_keys, self.skipped_keys, self.verbose)
+                for key, constraints in self.get_rosdep_version_constraints(resource_name).items():
+                    if key in rosdep_keys:
+                        collected = version_constraints.setdefault(key, [])
+                        collected.extend(c for c in constraints if c not in collected)
                 for rosdep_key in rosdep_keys:
                     try:
                         installer_key, resolution, dependencies = \
@@ -429,6 +442,15 @@ class RosdepLookup(object):
                         errors[resource_name] = e
             except ResourceNotFound as e:
                 errors[resource_name] = e
+
+        # version constraints from package.xml, as far as the installer supports them
+        for rosdep_key, constraints in version_constraints.items():
+            if rosdep_key not in depend_graph:
+                continue
+            node = depend_graph[rosdep_key]
+            installer = installer_context.get_installer(node['installer_key'])
+            node['install_keys'] = list(installer.apply_version_constraints(
+                node['install_keys'], constraints, rosdep_key))
 
         try:
             # TODO: I really don't like AssertionErrors here; this should be modeled as 'CyclicGraphError'

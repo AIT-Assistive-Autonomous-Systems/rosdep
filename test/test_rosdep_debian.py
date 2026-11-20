@@ -219,3 +219,24 @@ def test_AptInstaller_relations_without_satisfy():
             assert False, 'expected InstallFailed'
         except InstallFailed as e:
             assert 'apt-get satisfy' in str(e) and 'b | c' in str(e)
+
+
+def test_AptInstaller_version_constraints():
+    # package.xml version_* attributes become relations, as bloom writes them to debian/control
+    from rosdep2.platforms.debian import AptInstaller
+
+    installer = AptInstaller()
+    constraints = [('version_gte', '1.2'), ('version_lt', '2')]
+    with patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=True):
+        assert installer.apply_version_constraints(['libfoo.so.1'], constraints, 'k') == [
+            'libfoo.so.1 (>= 1.2), libfoo.so.1 (<< 2)']
+        # OR-group: bound to the last alternative (default package first, virtual last)
+        assert installer.apply_version_constraints(
+            ['libfoo-1-5 | libfoo.so.1'], constraints[:1], 'k') == [
+            'libfoo-1-5 | libfoo.so.1 (>= 1.2)']
+        # no single place for the version: unchanged
+        for resolved in (['a | b (>= 1)'], ['a (>= 1)'], ['a', 'b'], ['a, b'], ['a=1.0']):
+            assert installer.apply_version_constraints(resolved, constraints, 'k') == resolved
+    with patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=False):
+        # apt < 2.1 cannot install relations: ignored, as before
+        assert installer.apply_version_constraints(['libfoo.so.1'], constraints, 'k') == ['libfoo.so.1']
