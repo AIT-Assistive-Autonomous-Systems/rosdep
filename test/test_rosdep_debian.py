@@ -28,6 +28,7 @@
 # Author Ken Conley/kwc@willowgarage.com
 
 import os
+import subprocess
 import traceback
 from unittest.mock import Mock, patch, call
 
@@ -36,7 +37,8 @@ def get_test_dir():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), 'debian'))
 
 
-def test_dpkg_detect():
+@patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=False)
+def test_dpkg_detect(mock_satisfy):
     from rosdep2.platforms.debian import dpkg_detect
 
     with patch('rosdep2.platforms.debian.read_stdout') as mock_read_stdout:
@@ -114,9 +116,10 @@ def test_read_apt_cache_showpkg():
 def test_AptInstaller():
     from rosdep2.platforms.debian import AptInstaller
 
+    @patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=False)
     @patch('rosdep2.platforms.debian.read_stdout')
     @patch.object(AptInstaller, 'get_packages_to_install')
-    def test(expected_prefix, mock_get_packages_to_install, mock_read_stdout):
+    def test(expected_prefix, mock_get_packages_to_install, mock_read_stdout, mock_satisfy):
         installer = AptInstaller()
         mock_get_packages_to_install.return_value = []
         mock_read_stdout.return_value = ''
@@ -143,3 +146,76 @@ def test_AptInstaller():
     except AssertionError:
         traceback.print_exc()
         raise
+
+
+def test_is_dependency_relation():
+    from rosdep2.platforms.debian import is_dependency_relation
+
+    assert not is_dependency_relation('libfoo-dev')
+    assert not is_dependency_relation('libeigen3-dev=3.0.1-*')
+    assert is_dependency_relation('libfoo1 | libfoo2')
+    assert is_dependency_relation('libfoo-dev (>= 1.2)')
+    assert is_dependency_relation('libfoo-dev, libbar-dev')
+
+
+def test_dpkg_detect_apt():
+    # apt >= 2.1: satisfied if apt-get satisfy --simulate changes nothing
+    from rosdep2.platforms.debian import dpkg_detect
+
+    outputs = {
+        ('a | b (>= 1)',): ('0 upgraded, 0 newly installed\n', ''),
+        ('name',): ('0 upgraded, 0 newly installed\n', ''),  # name=version: only the name is checked
+        ('c (>= 2)',): ('Inst c (2.1 repo [amd64])\nConf c (2.1 repo [amd64])\n', ''),
+        ('d',): ('', 'E: Unable to satisfy dependencies.\n'),
+        ('e',): ('Remv f (1.0 [amd64])\n', ''),
+    }
+    exec_fn = Mock(side_effect=lambda cmd, capture_stderr: outputs.get(
+        tuple(cmd[3:]), ('0 upgraded, 0 newly installed\n', '')))
+    with patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=True):
+        # all satisfied: a single apt call
+        assert dpkg_detect(['a | b (>= 1)', 'x'], exec_fn) == ['a | b (>= 1)', 'x']
+        assert exec_fn.call_args_list == [call(['apt-get', 'satisfy', '--simulate', 'a | b (>= 1)', 'x'], True)]
+        # something missing: each on its own
+        outputs[('a | b (>= 1)', 'name', 'c (>= 2)', 'd', 'e')] = ('Inst c (2.1 repo [amd64])\n', '')
+        assert dpkg_detect(['a | b (>= 1)', 'name=1.0-*', 'c (>= 2)', 'd', 'e'], exec_fn) == [
+            'a | b (>= 1)', 'name=1.0-*']
+
+
+def test_dpkg_detect_without_satisfy():
+    # no apt-get satisfy (apt < 2.1): original detection, relations are not found
+    from rosdep2.platforms.debian import dpkg_detect
+
+    with patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=False), \
+            patch('rosdep2.platforms.debian.read_stdout') as mock_read_stdout:
+        mock_read_stdout.side_effect = [('c install ok installed\n', ''), '']
+        assert dpkg_detect(['a | b', 'c']) == ['c']
+
+
+def test_AptInstaller_satisfy():
+    from rosdep2.platforms.debian import AptInstaller
+
+    with patch('rosdep2.installers.os.geteuid', return_value=0), \
+            patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=True), \
+            patch('rosdep2.platforms.debian.read_stdout', return_value=''), \
+            patch.object(AptInstaller, 'get_packages_to_install') as mock_get_packages_to_install:
+        installer = AptInstaller()
+        mock_get_packages_to_install.return_value = ['a', 'b | c (>= 1)', 'e=1.0-*', 'd (>= 1), d (<< 2~)']
+        assert installer.get_install_command(['whatever'], interactive=False, quiet=True) == [
+            ['apt-get', 'install', '-y', '-qq', 'e=1.0-*'],
+            ['apt-get', 'satisfy', '-y', '-qq', 'a', 'b | c (>= 1)', 'd (>= 1), d (<< 2~)'],
+        ]
+        mock_get_packages_to_install.return_value = ['b | c']
+        assert installer.get_install_command(['whatever']) == [['apt-get', 'satisfy', 'b | c']]
+
+
+def test_AptInstaller_relations_without_satisfy():
+    from rosdep2.core import InstallFailed
+    from rosdep2.platforms.debian import AptInstaller
+
+    with patch('rosdep2.platforms.debian.apt_satisfy_available', return_value=False), \
+            patch.object(AptInstaller, 'get_packages_to_install', return_value=['a', 'b | c']):
+        try:
+            AptInstaller().get_install_command(['whatever'])
+            assert False, 'expected InstallFailed'
+        except InstallFailed as e:
+            assert 'apt-get satisfy' in str(e) and 'b | c' in str(e)

@@ -27,6 +27,8 @@
 
 # Author Tully Foote, Ken Conley
 
+import functools
+import re
 import subprocess
 import sys
 
@@ -46,6 +48,7 @@ from .pip import PIP_INSTALLER
 from .gem import GEM_INSTALLER
 from .npm import NPM_INSTALLER
 from .source import SOURCE_INSTALLER
+from ..core import InstallFailed
 from ..installers import PackageManagerInstaller
 from ..shell_utils import read_stdout
 
@@ -220,14 +223,75 @@ def _read_apt_cache_showpkg(packages, exec_fn=None):
             yield p, False, None
 
 
+# Characters that only occur in Debian dependency relations, never in package names
+# (e.g. ``libfoo1 | libfoo2 (>= 1.2)``, see deb-control(5)). Rules may use such a
+# relation as an apt package entry, as bloom copies it verbatim into debian/control.
+_RELATION_CHARS = ('|', '(', ',', ' ')
+
+
+def is_dependency_relation(entry):
+    """
+    Return whether a resolved apt entry is a dependency relation rather than a package name.
+
+    Relations may contain alternatives (``a | b``), version constraints
+    (``a (>= 1.0)``) and several comma-separated relations; versioned virtual
+    packages are allowed. ``name=version`` (version locking) is not a relation.
+    """
+    return any(c in entry.strip() for c in _RELATION_CHARS)
+
+
+@functools.lru_cache(maxsize=None)
+def apt_satisfy_available():
+    """
+    Return whether ``apt-get satisfy`` exists (apt >= 2.1: Debian 11, Ubuntu 22.04).
+
+    Checked once per process, on first use: the apt installer is registered on
+    every platform, so this must not run at import or registration time.
+    """
+    try:
+        output = subprocess.check_output(['apt-get', '--version'], stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    m = re.match(r'apt (\d+)\.(\d+)', output.decode(errors='replace'))
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (2, 1)
+
+
+def _query(entry):
+    # version locks (name=version): only the name is checked, as in the original detection
+    return entry if is_dependency_relation(entry) else entry.split('=')[0]
+
+
+def _apt_satisfied(entries, exec_fn=None):
+    """Whether ``apt-get satisfy --simulate`` succeeds without changing anything."""
+    std_out, std_err = (exec_fn or read_stdout)(
+        ['apt-get', 'satisfy', '--simulate'] + [_query(e) for e in entries], True)
+    changes = [line for line in std_out.splitlines() if line.startswith(('Inst ', 'Remv ', 'Purg '))]
+    return not changes and not any(line.startswith('E:') for line in std_err.splitlines())
+
+
 def dpkg_detect(pkgs, exec_fn=None):
     """
     Given a list of package, return the list of installed packages.
 
-    :param pkgs: list of package names, optionally followed by a fixed version (`foo=3.0`)
+    With apt >= 2.1 entries (package names, virtual packages, dependency
+    relations) are checked with ``apt-get satisfy --simulate``: all at once, and
+    each on its own only if something is missing. Otherwise the original
+    dpkg-query detection is used, which handles package names only.
+
+    :param pkgs: list of package names, optionally followed by a fixed version (`foo=3.0`),
+        or dependency relations
     :param exec_fn: function to execute Popen and read stdout (for testing)
     :return: list elements in *pkgs* that were found installed on the system
     """
+    if not apt_satisfy_available():
+        return _dpkg_query_detect(pkgs, exec_fn)
+    if not pkgs or _apt_satisfied(pkgs, exec_fn):
+        return list(pkgs)
+    return [p for p in pkgs if len(pkgs) > 1 and _apt_satisfied([p], exec_fn)]
+
+
+def _dpkg_query_detect(pkgs, exec_fn=None):
+    """Original detection of package names (dpkg-query, virtual packages via apt-cache)."""
     ret_list = []
     # this is mainly a hack to support version locking for eigen.
     # we strip version-locking syntax, e.g. libeigen3-dev=3.0.1-*.
@@ -256,7 +320,7 @@ def dpkg_detect(pkgs, exec_fn=None):
     # now for the remaining packages check, whether they are installed as
     # virtual packages
     remaining = _read_apt_cache_showpkg([p for p in pkgs if p not in installed_packages])
-    virtual = [n for (n, v, pr) in remaining if v and len(dpkg_detect(pr)) > 0]
+    virtual = [n for (n, v, pr) in remaining if v and len(_dpkg_query_detect(pr)) > 0]
 
     return installed_packages + virtual
 
@@ -311,4 +375,20 @@ class AptInstaller(PackageManagerInstaller):
         if quiet:
             base_cmd.append('-qq')
 
-        return [self._get_install_commands_for_package(base_cmd, p) for p in _iterate_packages(packages, reinstall)]
+        if apt_satisfy_available():
+            # apt-get satisfy takes package names, virtual packages (apt picks a provider)
+            # and dependency relations as in debian/control, all solved in one call.
+            # Only rosdep's version locks (``name=version``, globs allowed) need install.
+            locked = [p for p in packages if '=' in p and not is_dependency_relation(p)]
+            satisfy = [p for p in packages if p not in locked]
+        else:
+            relations = [p for p in packages if is_dependency_relation(p)]
+            if relations:
+                raise InstallFailed((APT_INSTALLER, 'dependency relations need apt-get satisfy '
+                                                    '(apt >= 2.1): %s' % ', '.join(relations)))
+            locked, satisfy = packages, []
+        commands = [self._get_install_commands_for_package(base_cmd, p)
+                    for p in _iterate_packages(locked, reinstall)] if locked else []
+        if satisfy:
+            commands.append(self.elevate_priv(['apt-get', 'satisfy'] + base_cmd[2:] + satisfy))
+        return commands

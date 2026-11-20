@@ -28,6 +28,7 @@
 # Author Tully Foote/tfoote@willowgarage.com, Ken Conley/kwc@willowgarage.com
 
 import os
+import shlex
 import subprocess
 import traceback
 
@@ -556,6 +557,9 @@ class RosdepInstaller(object):
                 print('#No packages to install')
             return
 
+        def quoted(cmd):  # printed commands must be valid shell (relations contain | ( >)
+            return ' '.join(shlex.quote(c) for c in cmd)
+
         if simulate:
             print('#[%s] Installation commands:' % (installer_key))
             for sub_command in command:
@@ -564,7 +568,7 @@ class RosdepInstaller(object):
                     for i, cmd in enumerate(sub_command):
                         print("  '%s' (alternative %d/%d)" % (' '.join(cmd), i + 1, sub_cmd_len))
                 else:
-                    print('  ' + ' '.join(sub_command))
+                    print('  ' + quoted(sub_command))
 
         # nothing left to do for simulation
         if simulate:
@@ -572,12 +576,12 @@ class RosdepInstaller(object):
 
         def run_command(command, installer_key, failures, verbose):
             # always echo commands to screen
-            print_bold('executing command [%s]' % ' '.join(command))
+            print_bold('executing command [%s]' % quoted(command))
             result = subprocess.call(command)
             if verbose:
-                print('command return code [%s]: %s' % (' '.join(command), result))
+                print('command return code [%s]: %s' % (quoted(command), result))
             if result != 0:
-                failures.append((installer_key, 'command [%s] failed' % (' '.join(command))))
+                failures.append((installer_key, 'command [%s] failed' % quoted(command)))
             return result
 
         # run each install command set and collect errors
