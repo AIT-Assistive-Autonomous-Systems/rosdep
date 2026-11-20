@@ -286,6 +286,8 @@ class AptInstaller(PackageManagerInstaller):
 
     def __init__(self):
         super(AptInstaller, self).__init__(dpkg_detect)
+        self.extra_args = []
+        """Passed to every apt-get install/satisfy call (``rosdep --apt-*``)."""
 
     def get_version_strings(self):
         output = subprocess.check_output(['apt-get', '--version'])
@@ -310,5 +312,6 @@ class AptInstaller(PackageManagerInstaller):
             base_cmd.append('-y')
         if quiet:
             base_cmd.append('-qq')
+        base_cmd += self.extra_args
 
         return [self._get_install_commands_for_package(base_cmd, p) for p in _iterate_packages(packages, reinstall)]

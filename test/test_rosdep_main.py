@@ -207,6 +207,19 @@ class TestRosdepMain(unittest.TestCase):
                 ]
                 lines = stdout.getvalue().splitlines()
                 assert set(lines) == set(expected), lines
+            with fakeout() as b:
+                # --apt-* options are passed to apt-get without the prefix
+                rosdep_main([
+                    'install', '-s', '-i',
+                    '--os', 'ubuntu:lucid',
+                    '--rosdistro', 'fuerte',
+                    '--apt-solver=3.0', '--apt-no-strict-pinning',
+                    '--from-paths', catkin_tree
+                ] + cmd_extras)
+                stdout, stderr = b
+                lines = stdout.getvalue().splitlines()
+                assert '  sudo -H apt-get install --solver=3.0 --no-strict-pinning libtool' \
+                    in lines, lines
         except SystemExit:
             assert False, 'system exit occurred: ' + b[1].getvalue()
         try:
@@ -333,3 +346,13 @@ class TestRosdepMain(unittest.TestCase):
             assert len(output) >= 2
             assert test_package_dir in output[-2]
             assert 'Package version ":{version}" does not follow version conventions' in output[-1]
+
+
+def test_split_apt_args():
+    from rosdep2.main import split_apt_args
+    assert split_apt_args(
+        ['install', '--apt-solver=3.0', '-y', '--apt-no-strict-pinning', 'pkg']
+    ) == (['--solver=3.0', '--no-strict-pinning'], ['install', '-y', 'pkg'])
+    # apt -o as --option; nothing after -- and no bare prefix
+    assert split_apt_args(['--apt-option=Dir::Etc::Preferences=/p', '--apt-', '--', '--apt-x']) == (
+        ['--option=Dir::Etc::Preferences=/p'], ['--apt-', '--', '--apt-x'])

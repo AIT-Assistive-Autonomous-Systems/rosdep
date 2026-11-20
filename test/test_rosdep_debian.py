@@ -143,3 +143,18 @@ def test_AptInstaller():
     except AssertionError:
         traceback.print_exc()
         raise
+
+
+def test_AptInstaller_extra_args():
+    # rosdep --apt-solver=3.0 --apt-no-strict-pinning: passed to every apt-get call
+    from rosdep2.platforms.debian import AptInstaller
+
+    with patch('rosdep2.installers.os.geteuid', return_value=0), \
+            patch('rosdep2.platforms.debian.read_stdout', return_value=''), \
+            patch.object(AptInstaller, 'get_packages_to_install', return_value=['a', 'b']):
+        installer = AptInstaller()
+        installer.extra_args = ['--solver=3.0', '--no-strict-pinning']
+        assert installer.get_install_command(['whatever'], interactive=False) == [
+            ['apt-get', 'install', '-y', '--solver=3.0', '--no-strict-pinning', 'a'],
+            ['apt-get', 'install', '-y', '--solver=3.0', '--no-strict-pinning', 'b'],
+        ]

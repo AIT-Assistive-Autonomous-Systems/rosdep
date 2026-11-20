@@ -69,6 +69,7 @@ from . import __version__
 from .core import RosdepInternalError, InstallFailed, UnsupportedOs, InvalidData, CachePermissionError, DownloadFailure
 from .installers import normalize_uninstalled_to_list
 from .installers import RosdepInstaller
+from .platforms.debian import APT_INSTALLER
 from .lookup import RosdepLookup, ResolutionError, prune_catkin_packages
 from .meta import MetaDatabase
 from .rospkg_loader import DEFAULT_VIEW_KEY
@@ -139,7 +140,32 @@ rosdep fix-permissions
   Recursively change the permissions of the user's ros home directory.
   May require sudo.  Can be useful to fix permissions after calling
   "rosdep update" with sudo accidentally.
+
+Options --apt-<option>[=<value>] are passed to apt-get as --<option>[=<value>]
+(a value only with '='), e.g. --apt-solver=3.0 --apt-no-strict-pinning
+(apt >= 3.1: may install versions other than the candidate) or
+--apt-option=Dir::Etc::Preferences=/path/to/pins.
 """
+
+APT_ARG_PREFIX = '--apt-'
+
+
+def split_apt_args(args):
+    """
+    Separate the ``--apt-<option>[=<value>]`` arguments, which are passed to apt-get.
+
+    :returns: (apt-get arguments without the prefix, remaining arguments)
+    """
+    apt_args, rest = [], []
+    for i, arg in enumerate(args):
+        if arg == '--':
+            rest += args[i:]
+            break
+        if arg.startswith(APT_ARG_PREFIX) and len(arg) > len(APT_ARG_PREFIX):
+            apt_args.append('--' + arg[len(APT_ARG_PREFIX):])
+        else:
+            rest.append(arg)
+    return apt_args, rest
 
 
 def _get_default_RosdepLookup(options):
@@ -402,7 +428,9 @@ def _rosdep_main(args):
                       help='Dependency types to install, can be given multiple times. '
                            'Choose from {}. Default: all except doc.'.format(VALID_DEPENDENCY_TYPES))
 
+    apt_args, args = split_apt_args(list(args))
     options, args = parser.parse_args(args)
+    options.apt_args = apt_args
     if options.print_version or options.print_all_versions:
         # First print the rosdep version.
         print('{}'.format(__version__))
@@ -602,6 +630,7 @@ def configure_installer_context(installer_context, options):
 
     - Override the OS detector in *installer_context* if necessary.
     - Set *as_root* for installers if specified.
+    - Pass ``--apt-*`` arguments to the apt installer.
 
     :raises: :exc:`UsageError` If user input options incorrectly
     """
@@ -613,6 +642,13 @@ def configure_installer_context(installer_context, options):
             installer_context.get_installer(k).as_root = v
         except KeyError:
             raise UsageError("Installer '%s' not defined." % k)
+    apt_args = getattr(options, 'apt_args', None)
+    if apt_args:
+        try:
+            installer_context.get_installer(APT_INSTALLER).extra_args = list(apt_args)
+        except KeyError:
+            raise UsageError("--apt-* options given, but installer '%s' is not defined."
+                             % APT_INSTALLER)
 
 
 def command_init(options):
